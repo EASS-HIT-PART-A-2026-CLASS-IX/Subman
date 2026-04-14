@@ -1,70 +1,71 @@
 from fastapi import FastAPI, HTTPException, status
-from typing import List, Dict
-import uuid
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional
+from urllib.parse import unquote
 
-# ייבוא המודלים שלנו מהקובץ השני (שימוש בנקודה לייבוא יחסי באותה תיקייה)
-from .models import SubscriptionCreate, SubscriptionResponse, SubscriptionUpdate
+app = FastAPI()
 
-app = FastAPI(title="SubMan API", description="Subscription Manager Backend for EX1")
+# מילון המרות מטבע (שערי חליפין לדוגמה)
+EXCHANGE_RATES = {
+    "ILS": 1.0,
+    "USD": 3.7,
+    "EUR": 4.0
+}
 
-# בסיס הנתונים שלנו בזיכרון (In-Memory Database)
-db: Dict[str, SubscriptionResponse] = {}
+class Subscription(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    price: float = Field(..., gt=0)
+    currency: str
+    category: str
+    billing_cycle: str
+    status: str
 
-@app.post("/subscriptions", response_model=SubscriptionResponse, status_code=status.HTTP_201_CREATED)
-def create_subscription(sub: SubscriptionCreate):
-    sub_id = str(uuid.uuid4())
-    new_sub = SubscriptionResponse(id=sub_id, **sub.model_dump())
-    db[sub_id] = new_sub
+    @field_validator('name')
+    @classmethod
+    def name_must_not_be_empty(cls, v):
+        if not v.strip():
+            raise ValueError('Name cannot be just whitespace')
+        return v.strip()
+
+subscriptions = []
+
+@app.get("/subscriptions")
+def get_subscriptions():
+    return subscriptions
+
+@app.post("/subscriptions", status_code=status.HTTP_201_CREATED)
+def create_subscription(sub: Subscription):
+    if any(s["name"].lower() == sub.name.lower() for s in subscriptions):
+        raise HTTPException(status_code=400, detail="Subscription already exists")
+    
+    # שימוש בסינטקס המעודכן של Pydantic V2
+    new_sub = sub.model_dump()
+    subscriptions.append(new_sub)
     return new_sub
 
-@app.get("/subscriptions", response_model=List[SubscriptionResponse])
-def get_subscriptions():
-    return list(db.values())
+@app.delete("/subscriptions/{name}")
+def delete_subscription(name: str):
+    global subscriptions
+    decoded_name = unquote(name).strip().lower()
+    
+    initial_count = len(subscriptions)
+    subscriptions = [s for s in subscriptions if s["name"].lower() != decoded_name]
+    
+    if len(subscriptions) < initial_count:
+        return {"message": "Deleted successfully"}
+    
+    raise HTTPException(status_code=404, detail=f"Subscription '{decoded_name}' not found")
 
 @app.get("/subscriptions/summary")
 def get_summary():
-    """נקודת קצה ייחודית המחשבת את קצב שריפת המזומנים החודשי"""
-    total_monthly = 0.0
-    active_count = 0
+    active_subs = [s for s in subscriptions if s["status"] == "active"]
     
-    for sub in db.values():
-        if sub.status.value != "active":
-            continue
-            
-        active_count += 1
-        # המרה לחישוב חודשי לפי מסלול החיוב
-        if sub.billing_cycle.value == "monthly":
-            total_monthly += sub.price
-        elif sub.billing_cycle.value == "yearly":
-            total_monthly += sub.price / 12
-        elif sub.billing_cycle.value == "weekly":
-            total_monthly += sub.price * 4.33 # בערך 4.33 שבועות בחודש
-            
+    total_ils = 0.0
+    for s in active_subs:
+        rate = EXCHANGE_RATES.get(s["currency"].upper(), 1.0)
+        total_ils += s["price"] * rate
+
     return {
-        "active_subscriptions": active_count, 
-        "monthly_burn_rate_ils": round(total_monthly, 2)
+        "monthly_burn_rate_ils": total_ils,
+        "active_subscriptions": len(active_subs)
     }
-
-@app.get("/subscriptions/{sub_id}", response_model=SubscriptionResponse)
-def get_subscription(sub_id: str):
-    if sub_id not in db:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    return db[sub_id]
-
-@app.put("/subscriptions/{sub_id}", response_model=SubscriptionResponse)
-def update_subscription(sub_id: str, sub_update: SubscriptionUpdate):
-    if sub_id not in db:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    
-    existing_sub = db[sub_id]
-    update_data = sub_update.model_dump(exclude_unset=True)
-    updated_sub = existing_sub.model_copy(update=update_data)
-    db[sub_id] = updated_sub
-    return updated_sub
-
-@app.delete("/subscriptions/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_subscription(sub_id: str):
-    if sub_id not in db:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    del db[sub_id]
-    return None
