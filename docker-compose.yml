@@ -1,0 +1,73 @@
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: subman
+      POSTGRES_PASSWORD: submanpass
+      POSTGRES_DB: subman_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://subman:submanpass@db:5432/subman_db
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./audit.log:/app/audit.log
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_started
+      api:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://subman:submanpass@db:5432/subman_db
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_KEY: subman:refresh:queue
+      MAX_CONCURRENCY: "5"
+      MAX_RETRIES: "3"
+      ENQUEUE_INTERVAL_SECONDS: "60"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    depends_on:
+      - api
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://api:8000
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,55 +1,33 @@
-from pydantic import BaseModel, Field, field_validator
 from datetime import date
 from typing import Optional
-from enum import Enum
 
-class CycleEnum(str, Enum):
-    monthly = "monthly"
-    yearly = "yearly"
-    weekly = "weekly"
+from pydantic import field_validator
+from sqlmodel import Field, SQLModel
 
-class StatusEnum(str, Enum):
-    active = "active"
-    paused = "paused"
-    canceled = "canceled"
 
-class CurrencyEnum(str, Enum):
-    ILS = "ILS"
-    USD = "USD"
-    EUR = "EUR"
+class Subscription(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(min_length=2, index=True, unique=True)
+    price: float = Field(ge=0)
+    currency: str = "ILS"
+    category: str = "other"
+    billing_cycle: str = "monthly"
+    status: str = "active"
+    purchase_date: date = Field(default_factory=date.today)
+    next_billing_date: Optional[str] = None
 
-class CategoryEnum(str, Enum):
-    entertainment = "entertainment"
-    software = "software"
-    health = "health"
-    utilities = "utilities"
-    other = "other"
-
-class SubscriptionBase(BaseModel):
-    name: str = Field(..., min_length=2, description="שם המנוי")
-    price: float = Field(..., ge=0, description="עלות המנוי")
-    currency: CurrencyEnum = CurrencyEnum.ILS
-    billing_cycle: CycleEnum = CycleEnum.monthly
-    category: CategoryEnum = CategoryEnum.other
-    status: StatusEnum = StatusEnum.active
-    next_billing_date: Optional[date] = None
-
-class SubscriptionCreate(SubscriptionBase):
-    @field_validator('next_billing_date')
+    @field_validator("price")
     @classmethod
-    def check_date_not_in_past(cls, value):
-        if value and value < date.today():
-            raise ValueError("תאריך החיוב הבא לא יכול להיות בעבר")
+    def validate_price(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("עלות המנוי חייבת להיות אי-שלילית")
         return value
 
-class SubscriptionUpdate(BaseModel):
-    name: Optional[str] = None
-    price: Optional[float] = None
-    currency: Optional[CurrencyEnum] = None
-    billing_cycle: Optional[CycleEnum] = None
-    category: Optional[CategoryEnum] = None
-    status: Optional[StatusEnum] = None
-    next_billing_date: Optional[date] = None
-
-class SubscriptionResponse(SubscriptionBase):
-    id: str
+    @field_validator("next_billing_date")
+    @classmethod
+    def check_next_billing_not_in_past(cls, value: Optional[str]) -> Optional[str]:
+        if value and value != "None":
+            parsed = date.fromisoformat(value)
+            if parsed < date.today():
+                raise ValueError("תאריך החיוב הבא לא יכול להיות בעבר")
+        return value
